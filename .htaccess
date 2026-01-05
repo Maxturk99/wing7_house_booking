@@ -1,0 +1,45 @@
+# Enable rewrite engine
+RewriteEngine On
+
+# Set base directory
+RewriteBase /wing7/
+
+# Redirect trailing slashes
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)/$ /$1 [L,R=301]
+
+# Remove index.php from URL
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ index.php?/$1 [L,QSA]
+
+# Protect sensitive files
+<FilesMatch "\.(sql|log|ini|cfg|config|yml)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Protect directories
+RedirectMatch 403 ^/(\.git|\.svn|\.env|config|database|logs)/?$
+
+# Security headers
+Header set X-Content-Type-Options "nosniff"
+Header set X-Frame-Options "SAMEORIGIN"
+Header set X-XSS-Protection "1; mode=block"
+
+# Caching for static files
+<FilesMatch "\.(jpg|jpeg|png|gif|ico|css|js)$">
+    Header set Cache-Control "max-age=2592000, public"
+</FilesMatch>
+
+# Compress files
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css text/javascript application/javascript
+</IfModule>
+
+# Error documents
+ErrorDocument 400 /errors/400.html
+ErrorDocument 401 /errors/401.html
+ErrorDocument 403 /errors/403.html
+ErrorDocument 404 /errors/404.html
+ErrorDocument 500 /errors/500.html
