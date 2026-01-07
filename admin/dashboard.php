@@ -16,7 +16,7 @@ $pageTitle = "แดชบอร์ดผู้ดูแลระบบ";
 
 // เชื่อมต่อฐานข้อมูล
 require_once '../config/database.php';
-$db = getDatabaseConnection();
+$db = DatabaseConfig::getConnection();
 
 // กำหนดค่าเริ่มต้นสำหรับตัวแปร
 $stats = [];

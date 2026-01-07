@@ -1,59 +1,51 @@
 <?php
-/**
- * Database Configuration File
- * ไฟล์ตั้งค่าฐานข้อมูล MySQL
- */
-
 class DatabaseConfig {
-    // Database connection settings
-    const DB_HOST = 'localhost';         // MySQL host
-    const DB_NAME = 'wing7_guest_db';    // Database name
-    const DB_USER = 'root';              // Database username
-    const DB_PASS = '';                  // Database password (empty for XAMPP)
-    const DB_CHARSET = 'utf8mb4';        // Character set
-    
-    // Optional: Development mode
-    const DEBUG_MODE = true;             // Set to false in production
-}
+    private static $pdo = null;
 
-// Create connection function
-function getDatabaseConnection() {
-    try {
-        $dsn = "mysql:host=" . DatabaseConfig::DB_HOST . ";dbname=" . DatabaseConfig::DB_NAME . ";charset=" . DatabaseConfig::DB_CHARSET;
-        $options = [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES => false,
-        ];
-        
-        $pdo = new PDO($dsn, DatabaseConfig::DB_USER, DatabaseConfig::DB_PASS, $options);
-        
-        if (DatabaseConfig::DEBUG_MODE) {
-            error_log("Database connection established successfully");
+    public static function getConnection() {
+        if (self::$pdo === null) {
+            // 1. ตรวจสอบพาธ .env (ใช้ __DIR__ เพื่ออ้างอิงตำแหน่งไฟล์ที่แน่นอน)
+            $envPath = dirname(__DIR__) . '/.env'; 
+            
+            if (file_exists($envPath)) {
+                $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+                foreach ($lines as $line) {
+                    if (strpos(trim($line), '#') === 0) continue;
+                    $parts = explode('=', $line, 2);
+                    if (count($parts) === 2) {
+                        putenv(trim($parts[0]) . "=" . trim($parts[1]));
+                    }
+                }
+            }
+
+            try {
+                // 2. ดึงค่ามาเช็คก่อนเชื่อมต่อ
+                $host = getenv('DB_HOST') ?: 'localhost';
+                $dbname = getenv('DB_NAME');
+                $user = getenv('DB_USER');
+                $pass = getenv('DB_PASS');
+                
+                if (!$dbname || !$user) {
+                    throw new Exception("Config Error: กรุณาตรวจสอบไฟล์ .env (DB_NAME หรือ DB_USER ว่างเปล่า)");
+                }
+
+                $dsn = "mysql:host=$host;dbname=$dbname;charset=utf8mb4";
+                $options = [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                    PDO::ATTR_EMULATE_PREPARES => false,
+                ];
+
+                self::$pdo = new PDO($dsn, $user, $pass, $options);
+
+                // 3. แสดงข้อความถ้าเชื่อมต่อสำเร็จ
+               // echo "Database connection successful!<br>";
+
+            } catch (Exception $e) {
+                // ถ้าพลาด ให้หยุดและบอกสาเหตุชัดๆ
+                die("เกิดข้อผิดพลาดในการเชื่อมต่อ: " . $e->getMessage());
+            }
         }
-        
-        return $pdo;
-    } catch (PDOException $e) {
-        // Log error and show user-friendly message
-        error_log("Database Connection Error: " . $e->getMessage());
-        
-        if (DatabaseConfig::DEBUG_MODE) {
-            die("Database Connection Failed: " . $e->getMessage());
-        } else {
-            die("ขออภัย ระบบฐานข้อมูลขัดข้อง กรุณาลองใหม่ในภายหลัง");
-        }
+        return self::$pdo;
     }
 }
-
-// Test connection (for debugging)
-function testDatabaseConnection() {
-    try {
-        $conn = getDatabaseConnection();
-        echo "Database connection successful!";
-        return true;
-    } catch (Exception $e) {
-        echo "Database connection failed: " . $e->getMessage();
-        return false;
-    }
-}
-?>

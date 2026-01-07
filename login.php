@@ -1,24 +1,21 @@
 <?php
-/**
- * Login Page - หน้าล็อกอินหลัก
- */
-
-// เริ่ม session
 session_start();
-
-// ตั้งค่าพื้นฐาน
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+require_once 'config/database.php';
 date_default_timezone_set('Asia/Bangkok');
+
+// --- เพิ่มระบบ CSRF Token ---
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+function sanitize($input) {
+    return htmlspecialchars(strip_tags(trim($input)), ENT_QUOTES, 'UTF-8');
+}
 
 // กำหนด path
 define('ROOT_PATH', dirname(__FILE__));
 define('ASSETS_PATH', ROOT_PATH . '/assets');
 
-// ฟังก์ชันช่วยเหลือ
-function sanitize($input) {
-    return htmlspecialchars(strip_tags(trim($input)), ENT_QUOTES, 'UTF-8');
-}
 
 // ตรวจสอบว่าล็อกอินอยู่แล้วหรือไม่
 if (isset($_SESSION['user_id']) && isset($_SESSION['user_role'])) {
@@ -54,106 +51,76 @@ $pageTitle = "เข้าสู่ระบบ - ระบบจองบ้า
 $error = '';
 $success = '';
 
-// ตรวจสอบการ submit form
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // รับข้อมูลจาก form
+    // 1. ตรวจสอบ CSRF Token
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+        die("Invalid CSRF Token");
+    }
+
     $username = sanitize($_POST['username'] ?? '');
     $password = $_POST['password'] ?? '';
-    
-    // ตรวจสอบว่ากรอกข้อมูลครบหรือไม่
+    $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'Unknown';
+
     if (empty($username) || empty($password)) {
         $error = "กรุณากรอกชื่อผู้ใช้และรหัสผ่าน";
     } else {
-        // เชื่อมต่อฐานข้อมูล (ใช้ PDO)
         try {
-            // สร้างการเชื่อมต่อ
-            $host = 'localhost';
-            $dbname = 'wing7_guest_db';
-            $dbuser = 'root';
-            $dbpass = '';
+            $pdo = DatabaseConfig::getConnection();
+
+            // --- 2. เพิ่มระบบ Login Throttling ---
+            $throttle_limit = 5; // ผิดได้ 5 ครั้ง
+            $lockout_time = 15;  // ล็อก 15 นาที
             
-            $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $dbuser, $dbpass);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            
-            // ค้นหาผู้ใช้
-            $stmt = $pdo->prepare("SELECT * FROM users WHERE username = :username OR email = :username");
-            $stmt->execute([':username' => $username]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if ($user) {
-                // ตรวจสอบรหัสผ่าน
-                if (password_verify($password, $user['password'])) {
-                    // ตรวจสอบสถานะผู้ใช้
+            $checkLogSql = "SELECT COUNT(*) FROM logs 
+                            WHERE ip_address = :ip AND action = 'login_failed' 
+                            AND created_at > DATE_SUB(NOW(), INTERVAL :lock_time MINUTE)";
+            $stmtLog = $pdo->prepare($checkLogSql);
+            $stmtLog->execute([':ip' => $ip_address, ':lock_time' => $lockout_time]);
+            $failed_count = $stmtLog->fetchColumn();
+
+            if ($failed_count >= $throttle_limit) {
+                $error = "คุณพยายามล็อกอินผิดเกินกำหนด กรุณาลองใหม่ในอีก $lockout_time นาที";
+            } else {
+                // ค้นหาผู้ใช้
+                $stmt = $pdo->prepare("SELECT * FROM users WHERE username = :u1 OR email = :u2 LIMIT 1");
+                $stmt->execute([':u1' => $username, ':u2' => $username]);
+                $user = $stmt->fetch();
+
+                if ($user && password_verify($password, $user['password'])) {
                     if ($user['status'] !== 'active') {
                         $error = "บัญชีผู้ใช้ถูกระงับการใช้งาน";
                     } else {
-                        // ตั้งค่า session
+                        // ล็อกอินสำเร็จ: Regenerate Session เพื่อป้องกัน Session Fixation
+                        session_regenerate_id(true);
+                        
                         $_SESSION['user_id'] = $user['id'];
-                        $_SESSION['username'] = $user['username'];
-                        $_SESSION['full_name'] = $user['full_name'];
                         $_SESSION['user_role'] = $user['role'];
-                        $_SESSION['department'] = $user['department'];
                         $_SESSION['logged_in'] = true;
-                        
-                        // อัปเดตเวลาล็อกอินล่าสุด
-                        $updateStmt = $pdo->prepare("UPDATE users SET updated_at = NOW() WHERE id = :id");
-                        $updateStmt->execute([':id' => $user['id']]);
-                        
-                        // บันทึกการล็อกอิน
-                        $logStmt = $pdo->prepare("INSERT INTO logs (user_id, action, table_name, record_id, ip_address, user_agent) 
-                                                 VALUES (:user_id, 'login', 'users', :record_id, :ip, :agent)");
-                        $logStmt->execute([
-                            ':user_id' => $user['id'],
-                            ':record_id' => $user['id'],
-                            ':ip' => $_SERVER['REMOTE_ADDR'] ?? 'Unknown',
-                            ':agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'Unknown'
+
+                        // บันทึก Log สำเร็จ
+                        $logSql = "INSERT INTO logs (user_id, action, table_name, record_id, ip_address, user_agent) 
+                                   VALUES (:uid, 'login_success', 'users', :rid, :ip, :agent)";
+                        $pdo->prepare($logSql)->execute([
+                            ':uid' => $user['id'], ':rid' => $user['id'], ':ip' => $ip_address, ':agent' => $_SERVER['HTTP_USER_AGENT']
                         ]);
-                        
-                        // Redirect ไปยัง dashboard ตาม role
-                        switch ($user['role']) {
-                            case 'admin':
-                                header('Location: admin/dashboard.php');
-                                break;
-                            case 'staff':
-                                header('Location: staff/dashboard.php');
-                                break;
-                            case 'approver':
-                                header('Location: approver/dashboard.php');
-                                break;
-                            case 'commander':
-                                header('Location: commander/dashboard.php');
-                                break;
-                            case 'user':
-                                header('Location: user/dashboard.php');
-                                break;
-                            default:
-                                header('Location: index.php');
-                                break;
-                        }
+
+                        header("Location: " . $user['role'] . "/dashboard.php");
                         exit();
                     }
                 } else {
+                    // ล็อกอินไม่สำเร็จ: บันทึก Log ความล้มเหลวเพื่อใช้ในการ Throttling
                     $error = "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง";
+                    $logFailSql = "INSERT INTO logs (user_id, action, table_name, ip_address, user_agent) 
+                                   VALUES (NULL, 'login_failed', 'users', :ip, :agent)";
+                    $pdo->prepare($logFailSql)->execute([
+                        ':ip' => $ip_address, ':agent' => $_SERVER['HTTP_USER_AGENT']
+                    ]);
                 }
-            } else {
-                $error = "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง";
             }
-        } catch (PDOException $e) {
-            $error = "เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล";
-            // สำหรับ debugging
-            if (isset($_GET['debug'])) {
-                $error .= ": " . $e->getMessage();
-            }
+        } catch (Exception $e) {
+            $error = "ระบบขัดข้อง: " . $e->getMessage();
         }
     }
-}
-
-// ตรวจสอบข้อความจาก URL
-if (isset($_GET['error'])) {
-    $error = sanitize($_GET['error']);
-}
-if (isset($_GET['success'])) {
-    $success = sanitize($_GET['success']);
 }
 ?>
 <!DOCTYPE html>
@@ -386,6 +353,7 @@ if (isset($_GET['success'])) {
                 <?php endif; ?>
                 
                 <form method="POST" action="">
+                    <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                     <div class="mb-4">
                         <label for="username" class="form-label">
                             <i class="fas fa-user me-2"></i>ชื่อผู้ใช้หรืออีเมล
